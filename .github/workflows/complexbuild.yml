@@ -1,0 +1,388 @@
+name: integrationtests/complexbuild
+on:
+#   # The shortest interval you can run scheduled workflows is once every 5 minutes.
+#   period: '130'
+#   # The shortest interval you can run scheduled workflows is once every 5 minutes.
+#   period: '150'
+  schedule:
+  - cron: 15 10 * * *
+  - cron: 10,44 14 * 3 WED
+  push:
+env:
+  quickCompileMavenGoals_experimental: '1'
+  password: "${{ secrets.password }}"
+  username: admin
+jobs:
+  Build-binaries-Build-binaries:
+    runs-on:
+      - self-hosted
+      - hasDocker
+    container:
+      image: ubuntu
+      volumes:
+      - "${{ env.working_directory }}:${{ env.working_directory }}"
+      - "${{ env.tmp_directory }}:${{ env.tmp_directory }}"
+    steps:
+    - uses: actions/checkout@v4.1.0
+      with:
+        clean: false
+    - run: |-
+        echo 'echo success' > script.sh
+        echo 'success' > output.log
+#     # Only 'Local' scope is supported for inject-variables. The following snippet can be uncommented and used but will be scoped to the current job.
+#     - run: |-
+#         while IFS= read -r line || [[ -n "$line" ]]; do
+#           if [[ -n "$line" ]]; then
+#             key=$(echo "myspace_$line" | cut -d= -f1)
+#             value=$(echo "$line" | cut -d= -f2)
+#             echo "$key=$value" >> "$GITHUB_ENV"
+#           fi
+#         done < folder\file.txt
+#       shell: bash
+    - uses: actions/upload-artifact@v4.1.0
+      with:
+        name: IN-COM_Binaries
+        path: script.sh
+        if-no-files-found: error
+    - uses: actions/upload-artifact@v4.1.0
+      with:
+        name: IN-COM_Logs
+        path: "**/*.log"
+        if-no-files-found: ignore
+    - uses: actions/upload-artifact@v4.1.0
+      with:
+        name: IN-COM_All
+        path: "**/*"
+        if-no-files-found: error
+    - uses: actions/upload-artifact@v4.1.0
+      with:
+        name: IN-COM_my-artifacts
+        path: "**/**/.zip"
+        if-no-files-found: error
+  Git-Fun-All-The-Git:
+    runs-on: ubuntu-latest
+    needs:
+    - Build-binaries-Build-binaries
+    steps:
+    - uses: actions/checkout@v4.1.0
+      with:
+        clean: false
+    - run: |-
+        echo $RANDOM > random.txt
+        cat random.txt
+    # stop-job with success isn't natively supported in GitHub Actions.
+    # To support this behavior, the steps after this task will use
+    # this task's condition(s) to conditionally skip them.
+    # See https://github.com/actions/runner/issues/662
+    - id: stop-job-9457
+      name: Skip remaining tasks and exit with success
+      run: stop=${{ env.myvar == 'foo' }} >> $GITHUB_OUTPUT && exit 0
+      if: env.myvar == 'foo'
+    # Ensure parameter if_key_exists is set correctly
+    - name: Install SSH key
+      uses: shimataro/ssh-key-action@v2.6.1
+      with:
+        key: "${{ secrets.BAMBOO_SSH_KEY }}"
+        name: id_rsa
+        known_hosts: "${{ secrets.BAMBOO_KNOWN_HOSTS }}"
+        if_key_exists: fail
+      if: "${{ steps.stop-job-9457.outputs.stop == 'false' }}"
+    - name: Install sshpass
+      run: sudo apt-get install -y sshpass
+      if: "${{ steps.stop-job-9457.outputs.stop == 'false' }}"
+    - name: SSH 20.230.215.196
+      run: |-
+        sshpass -p ${{ secrets.BAMBOO_SSH_PASSWORD }} ssh -o StrictHostKeyChecking=no -T ${{ env.USER_NAME }}@20.230.215.196 -i id_rsa << EOF
+          ls -alh
+          echo "hi"
+        EOF
+      env:
+        USER_NAME: bamboo
+      if: "${{ steps.stop-job-9457.outputs.stop == 'false' }}"
+    - name: SSH github.com
+      run: |-
+        sshpass -p ${{ secrets.BAMBOO_SSH_PASSWORD }} ssh -o StrictHostKeyChecking=no -T ${{ env.USER_NAME }}@github.com -i id_rsa << EOF
+          ls -alh
+          echo "hi"
+        EOF
+      env:
+        USER_NAME: bamboo
+      if: "${{ steps.stop-job-9457.outputs.stop == 'false' }}"
+    - name: Commit a silly file
+      run: |-
+        git add .
+        git commit -m "Bamboo: ${{ github.workflow }}-${{ github.job }}-${{ github.run_id }}"
+        git push origin HEAD
+      if: "${{ steps.stop-job-9457.outputs.stop == 'false' }}"
+    - name: Push it!
+      run: git push origin HEAD
+      if: "${{ steps.stop-job-9457.outputs.stop == 'false' }}"
+    - run: git status
+      if: "${{ steps.stop-job-9457.outputs.stop == 'false' }}"
+    - name: Tag Repository ${{ github.repository }}
+      run: "git tag \ngit push origin \n"
+      if: "${{ steps.stop-job-9457.outputs.stop == 'false' }}"
+    - name: Branch it!
+      run: |
+        git checkout -b branch_${{ github.workflow }}-${{ github.job }}-${{ github.run_id }}
+        git push --set-upstream origin branch_${{ github.workflow }}-${{ github.job }}-${{ github.run_id }}
+      if: "${{ steps.stop-job-9457.outputs.stop == 'false' }}"
+  Run-tests-Integration-tests:
+    runs-on: ubuntu-latest
+    container:
+      image: postgres
+      volumes:
+      - "${{ env.working_directory }}:${{ env.working_directory }}"
+      - "${{ env.tmp_directory }}:${{ env.tmp_directory }}"
+    needs:
+    - Build-binaries-Build-binaries
+    - Git-Fun-All-The-Git
+    steps:
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: IN-COM_Binaries
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: IN-COM_All
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: IN-COM_my-artifacts
+        path: "./test"
+    - uses: actions/checkout@v4.1.0
+    - run: touch report.xml
+    # This action will fail to process `testng-results.xml`, but will successfully handle TestNG test suite file(s), e.g. `**/TEST-*.xml`.
+    # Ensure the path to your test suite files(s) is correct. If you wish to use the original path, set `report_path` to "**/testng-results.xml".
+    - name: Publish TestNG results
+      uses: scacap/action-surefire-report@v1.7.2
+      with:
+        report_paths: UPDATE_ME
+      if: always()
+    - name: Publish Mocha test results
+      uses: EnricoMi/publish-unit-test-result-action@v2.12.0
+      if: env.test != '' && always()
+      with:
+        files: |-
+          mocha-1.json
+          mocha-2.json
+    - name: Publish MS Test results
+      uses: EnricoMi/publish-unit-test-result-action@v2.12.0
+      if: env.test != '' && always()
+      with:
+        files: |-
+          tests1\results.trx
+          tests2\results.trx
+    - run: |-
+        while IFS= read -r line || [[ -n "$line" ]]; do
+          if [[ -n "$line" ]]; then
+            key=$(echo "inject_$line" | cut -d= -f1)
+            value=$(echo "$line" | cut -d= -f2)
+            echo "$key=$value" >> "$GITHUB_ENV"
+          fi
+        done < tests.txt
+      shell: bash
+      if: always()
+  Run-tests-Unit-tests:
+    runs-on: windows-latest
+    container:
+      image: oracle
+      volumes:
+      - "/home/user:/home/user"
+      - "/opt:/opt"
+    needs:
+    - Build-binaries-Build-binaries
+    - Git-Fun-All-The-Git
+    steps:
+    - uses: actions/setup-node@v4.0.0
+      with:
+        node-version: UPDATE_ME
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: IN-COM_Binaries
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: IN-COM_All
+    - uses: actions/checkout@v4.1.0
+      with:
+        clean: false
+    - run: touch report.xml
+    - name: Publish test results
+      uses: EnricoMi/publish-unit-test-result-action@v2.12.0
+      if: env.test != '' && always()
+      with:
+        junit_files: "**/test-reports/*.xml"
+    - uses: actions/setup-node@v4.0.0
+      with:
+        node-version: UPDATE_ME
+        cache: npm
+    - name: Sample NPM task
+      run: npm version
+      working-directory: src
+      if: env.FOO != ''
+      env:
+        BAR: bar
+        BAZ: baz
+    - name: Sample Nunit parser task
+      uses: EnricoMi/publish-unit-test-result-action@v2.12.0
+      if: env.ABC != '' && always()
+      with:
+        nunit_files: "**/test-reports/*.xml"
+    - name: Sample command task
+      run: foo --help
+      working-directory: tmp
+      if: env.ABC != ''
+      env:
+        BAR: bar
+        BAZ: baz
+    - uses: actions/setup-java@v4.0.0
+      with:
+        distribution: zulu
+        java-version: '11'
+    - name: Sample Grails task
+      working-directory: tmp
+      run: |-
+        grails clean --non-interactive
+        grails test-app --non-interactive
+      if: env.ABC != ''
+      env:
+        BAR: bar
+        BAZ: baz
+    - name: Publish test results
+      uses: EnricoMi/publish-unit-test-result-action@v2.12.0
+      if: env.ABC != '' && always()
+      with:
+        junit_files: |-
+          **/*reports/*.xml
+          **/foo/*.xml
+      env:
+        BAR: bar
+        BAZ: baz
+    - name: Sample Bower task
+      run: |-
+        npm install -g bower
+        bower install
+      working-directory: tmp
+      if: env.ABC != ''
+      env:
+        BAR: bar
+        BAZ: baz
+    - name: Sample Gulp task
+      run: |-
+        npm install --save-dev gulp
+        gulp clean build --gulpfile scratch/gulp.js
+      working-directory: tmp
+      if: env.ABC != ''
+      env:
+        BAR: bar
+        BAZ: baz
+    - uses: ruby/setup-ruby@v1.165.1
+      with:
+        bundler-cache: true
+    - name: Automation with fastlane
+      run: bundle exec fastlane deploy submit:false build_number:24
+      working-directory: tmp
+      if: env.ABC != ''
+      env:
+        BAR: bar
+        BAZ: baz
+    - uses: seanmiddleditch/gha-setup-vsdevenv@v4
+      with:
+        arch: x86
+    - name: Build VS Task
+      run: devenv x86 ActionsImporter.sln /p:Configuration=Release /p:platform="Any CPU"
+    - name: Sample Grunt task
+      run: |-
+        npm install --save-dep grunt
+        grunt css js --gruntfile scratch/Gruntfile.js
+      working-directory: tmp
+      if: env.ABC != ''
+      env:
+        BAR: bar
+        BAZ: baz
+    - name: Unlock Keychain
+      run: security unlock-keychain -p ${{ secrets.KEYCHAIN_PASSWORD }} $KEYCHAIN_PATH
+      env:
+        KEYCHAIN_PATH: login.keychain
+      if: env.FOO != ''
+    - name: Set default keychain
+      run: security default-keychain -s login.keychain
+      if: env.FOO != ''
+    - uses: microsoft/vstest-action@v1.0.0
+      with:
+        searchFolder: "${{ github.workspace }}"
+    - name: Publish NUnit test results
+      uses: EnricoMi/publish-unit-test-result-action@v2.12.0
+      if: always()
+      with:
+        nunit_files: foo.dll
+    - run: npm install nodeunit -g
+      name: Install nodeunit
+    - run: nodeunit --reporter junit --output test-reports/ test/
+      name: Is this just NUnit?
+    - name: Publish nodeunit test results
+      uses: EnricoMi/publish-unit-test-result-action@v2.12.0
+      if: always()
+      with:
+        files: test-reports/
+    - name: Publish test results
+      uses: EnricoMi/publish-unit-test-result-action@v2.12.0
+      if: always()
+      with:
+        junit_files: report.xml
+  Deploy-Deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: approval_required
+    container:
+      image: oracle
+      volumes:
+      - "/home/user:/home/user"
+      - "/opt:/opt"
+    needs:
+    - Build-binaries-Build-binaries
+    - Git-Fun-All-The-Git
+    - Run-tests-Integration-tests
+    - Run-tests-Unit-tests
+    steps:
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: IN-COM_Binaries
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: IN-COM_All
+    - uses: actions/checkout@v4.1.0
+      with:
+        clean: false
+    - uses: aws-actions/configure-aws-credentials@v4.0.1
+      with:
+        aws-region: us-west-1
+        aws-access-key-id: "${{ secrets.AWS_ACCESS_KEY_ID }}"
+        aws-secret-access-key: "${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+      if: env.test != ''
+    - run: |-
+        commit_hash=`git rev-parse HEAD`
+        aws deploy create-deployment --application-name AppECS-begona_cluster-alt_service --deployment-group-name DgpECS-begona_cluster-alt_service --s3-location bucket=elasticbeanstalk-us-west-1-778232459879,key=${{ secrets.AWS_S3_BUCKET_KEY }},bundleType={{ env.BUNDLE_TYPE }} --github-location repository=$GITHUB_REPOSITORY,commitId=$commit_hash --ignore-application-stop-failures
+      if: env.test != ''
+  Cleanup-Cleanup:
+    runs-on: ubuntu-latest
+    if: always()
+    container:
+      image: oracle
+      volumes:
+      - "/home/user:/home/user"
+      - "/opt:/opt"
+    needs:
+    - Build-binaries-Build-binaries
+    - Git-Fun-All-The-Git
+    - Run-tests-Integration-tests
+    - Run-tests-Unit-tests
+    - Deploy-Deploy
+    steps:
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: IN-COM_Binaries
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: IN-COM_All
+    - uses: actions/checkout@v4.1.0
+      with:
+        clean: false
